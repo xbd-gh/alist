@@ -1,6 +1,7 @@
 name: release_android
 
 on:
+  workflow_dispatch:
   release:
     types: [ published ]
 
