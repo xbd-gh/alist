@@ -27,13 +27,13 @@ type Addition struct {
 	//driver.RootID
 	// define other
 
-	FileNameEnc  bool   `json:"filename_encoding" required:"true" default:"true" help:"whether encode the file name"`
-	DirNameEnc   bool   `json:"directory_name_encoding" required:"true" default:"true" help:"whether encode the dir name"`
+	FileNameEnc  bool   `json:"file_name_enc" required:"true" default:"true" help:"whether encode the file name"`
+	DirNameEnc   bool   `json:"dir_name_enc" required:"true" default:"true" help:"whether encode the dir name"`
 	RemotePath   string `json:"remote_path" required:"true" help:"This is where the encrypted data stores"` //alist视角下的绝对路径
 	NameEncoding string `json:"name_encoding" type:"select" required:"true" options:"URL64,RawURL64" default:"RawURL64" help:"for advanced user only!"`
 	Thumbnail    bool   `json:"thumbnail" required:"true" default:"false" help:"enable thumbnail which pre-generated under .thumbnails folder"`
-	ShowHidden   bool   `json:"show_hidden"  default:"true" required:"false" help:"show hidden directories and files"`
-	ShowInEnc    bool   `json:"show_in_enc"  default:"false" required:"false" help:"show directories and files in enc view"`
+	ShowHidden   bool   `json:"show_hidden"  default:"true" required:"true" help:"show hidden directories and files"`
+	ShowInEnc    bool   `json:"show_in_enc"  default:"false" required:"true" help:"show directories and files in enc view"`
 }
 
 var config = driver.Config{
@@ -184,7 +184,7 @@ func (d *XorDriver) initXorffObj(ctx context.Context, alistObj model.Obj) *XorFF
 	xorObj.isEncoded, xorObj.isXorFF = d.parseStatus(ctx, alistObj)
 	alistName := alistObj.GetName()
 	if d.ShowInEnc {
-		if xorObj.isEncoded || xorObj.isXorFF {
+		if xorObj.isXorFF { //没有只编码不加密的情况
 			xorObj.Name = alistName
 		} else {
 			xorObj.Name = d.cipher.encPath(alistName, alistObj.IsDir())
@@ -232,7 +232,7 @@ func (d *XorDriver) Init(ctx context.Context) error {
 		return fmt.Errorf("can't find remote storage: %w", err)
 	}
 
-	c, err := newCipher(d.DirNameEnc, d.FileNameEnc, d.NameEncoding)
+	c, err := newCipher(d.DirNameEnc, d.FileNameEnc, d.NameEncoding, d.pathSep)
 	if err != nil {
 		return fmt.Errorf("failed to create Cipher: %w", err)
 	}
@@ -330,14 +330,11 @@ func (d *XorDriver) Link(ctx context.Context, file model.Obj, args model.LinkArg
 	if err != nil {
 		return nil, err
 	}
-
 	if remoteLink.RangeReadCloser == nil && remoteLink.MFile == nil && len(remoteLink.URL) == 0 {
 		return nil, fmt.Errorf("the remote storage driver need to be enhanced to support encrytion")
 	}
 	_, xor := d.parseStatus(ctx, file)
-	if d.ShowInEnc && xor { //加密视图时文件已经加密则返回原始链接
-		return remoteLink, nil
-	} else if !d.ShowInEnc && !xor { //解密视图时文件未加密则返回原始链接
+	if (d.ShowInEnc && xor) || (!d.ShowInEnc && !xor) { //加密视图时文件已经加密 或者 解密视图时文件未加密 则返回原始链接
 		return remoteLink, nil
 	}
 	remoteFileSize := remoteFile.GetSize()
@@ -348,7 +345,7 @@ func (d *XorDriver) Link(ctx context.Context, file model.Obj, args model.LinkArg
 			length = -1
 		}
 		rrc := remoteLink.RangeReadCloser
-		if len(remoteLink.URL) > 0 {			
+		if len(remoteLink.URL) > 0 {
 			var converted, err = stream.GetRangeReadCloserFromLink(remoteFileSize, remoteLink)
 			if err != nil {
 				return nil, err
@@ -432,8 +429,8 @@ func (d *XorDriver) Rename(ctx context.Context, srcObj model.Obj, newName string
 		//newEncName = newName//原来是编码加密的这样重命名时如果改了后缀会导致编码加密标志丢失
 		return errors.New("加密视图模式下不支持重命名！")
 	} else {
-		enc, xor := d.parseStatus(ctx, srcObj)
-		if !enc && !xor {
+		_, xor := d.parseStatus(ctx, srcObj)
+		if !xor { //没有只编码不加密的情况.只要不加密就判定没有编码
 			newEncName = newName
 		} else {
 			newEncName = d.cipher.encPath(newName, true)
@@ -478,13 +475,13 @@ func (d *XorDriver) Put(ctx context.Context, dstDir model.Obj, streamer model.Fi
 		return errs.ObjectNotFound
 	}
 	fileName := streamer.GetName()
-	enc, xor := d.cipher.parseSuffix(fileName)
-	if (d.ShowInEnc && xor != "") || (!d.ShowInEnc && xor == "" && enc == "") { //加密视图下文件已加密 或者 解密视图文件未加密未编码
-		if !d.ShowInEnc && xor == "" && enc == "" { //解密视图文件未加密未编码
+	_, xor := d.cipher.parseSuffix(fileName)
+	if (d.ShowInEnc && xor != "") || (!d.ShowInEnc && xor == "") { //加密视图下文件已加密 或者 解密视图文件未加密
+		if !d.ShowInEnc && xor == "" { //解密视图文件未加密,不允许出现未加密但是编码的情况
 			fileName = d.cipher.encPath(fileName, false)
 		} else if d.ShowInEnc && xor != "" { //加密视图下文件已加密
 			tName, err := d.cipher.decPath(fileName)
-			if err != nil {
+			if err == nil {
 				fileName = tName
 			}
 		}

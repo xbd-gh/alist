@@ -1,3 +1,5 @@
+// 该包处理过的文件、文件夹后缀为.x或者.编码后缀x，不会出现.编码后缀这种只编码没有加密的情况。
+//只要不加密就判定没有编码
 package xorff
 
 import (
@@ -28,6 +30,7 @@ type Cipher struct {
 	xorSuf      string
 	bytesOfXOR  int //异或的字节数,0xFF+1
 	encSufs     map[string]string
+	pathSep     string
 }
 
 // nameEncoding are the encoding methods dealing with   names
@@ -66,12 +69,15 @@ type xorFFer struct {
 //======================================================
 //========new函数=======================================
 
-func newCipher(dirNameEnc bool, fileNameEnc bool, nameEnc string) (*Cipher, error) {
+func newCipher(dirNameEnc bool, fileNameEnc bool, nameEnc string, pathSep string) (*Cipher, error) {
 	encSufs := map[string]string{"url64": ".u64", "rawurl64": ".ru64"} //URLbase64编码后缀//RawURL64Encoding编码后缀
 	nameEnc = strings.ToLower(nameEnc)
 	encSuf, ok := encSufs[nameEnc]
 	if !ok {
 		return nil, fmt.Errorf("can't find encoding name: %s", nameEnc)
+	}
+	if pathSep == "" {
+		pathSep = "/"
 	}
 	c := &Cipher{
 		fileNameEnc: fileNameEnc,
@@ -80,6 +86,7 @@ func newCipher(dirNameEnc bool, fileNameEnc bool, nameEnc string) (*Cipher, erro
 		xorSuf:      "x",
 		bytesOfXOR:  0xFF + 1,
 		encSufs:     encSufs,
+		pathSep:     pathSep,
 	}
 	c.nameEncoder = c.newNameEncoding(c.encSuf)
 	if c.nameEncoder == nil {
@@ -134,18 +141,19 @@ func (c *Cipher) parseSuffix(name string) (isEncode string, isXOR string) {
 	return "", ""
 }
 
-// 分析参数的名字是否编码过，编码过则不再编码。未编码过但是有加密标志则不编码。
-// 未编码则返回原值
+// 分析参数的名字是否编码加密过，无加密标志则编码,有加密标志则不编码。
+// 未编码则返回原值。返回值有3种原值、.x、.编码后缀x
 func (c *Cipher) encPath(in string, dir bool) string {
-	//是文件夹且文件夹名不编码
+	/*是文件夹且文件夹名不编码
 	if dir && !c.dirNameEnc {
 		return in
 	}
 	//是文件且文件夹名、文件名都不编码
 	if !dir && !c.fileNameEnc && !c.dirNameEnc {
 		return in + "." + c.xorSuf
-	}
-	names := strings.Split(in, "/")
+	}*/
+	in = strings.TrimSpace(in)
+	names := strings.Split(in, c.pathSep)
 	n := len(names) - 1
 	for i := 0; i <= n; i++ {
 		//是文件夹且文件夹名不编码
@@ -156,15 +164,18 @@ func (c *Cipher) encPath(in string, dir bool) string {
 		if !dir && !c.fileNameEnc && !c.dirNameEnc {
 			return in + "." + c.xorSuf
 		}
-		if !c.dirNameEnc && i < n { //文件夹名不编码
+		if !c.dirNameEnc && i < n { //文件夹名不编码,names[i]肯定是文件夹名，不是文件名
+			continue
+		}
+		if names[i] == "" {
 			continue
 		}
 		if i == n && !c.fileNameEnc && !dir { //文件名不编码
 			names[i] = names[i] + "." + c.xorSuf
 			break
 		}
-		enc, xor := c.parseSuffix(names[i])
-		if enc == "" && xor == "" {
+		_, xor := c.parseSuffix(names[i])
+		if xor == "" {
 			temp := []byte(names[i])
 			for k := 0; k < len(temp); k++ {
 				temp[k] = ^temp[k]
@@ -175,15 +186,19 @@ func (c *Cipher) encPath(in string, dir bool) string {
 	return strings.Join(names, "/")
 }
 
-// 根据名字的后缀进行解码，未编码的名字不解码返回值为原来的名字
+// 根据名字的后缀进行解码，除.x、.编码x外其余的不解码返回值为原来的名字
 func (c *Cipher) decPath(in string) (string, error) {
-	names := strings.Split(in, "/") //不能使用stdencoding，因为有/
+	in = strings.TrimSpace(in)
+	names := strings.Split(in, c.pathSep) //不能使用stdencoding，因为有/
 	for i := range names {
+		if names[i] == "" {
+			continue
+		}
 		isEncode, isXOR := c.parseSuffix(names[i])
 		if isEncode == "" && isXOR != "" { //解密时文件名未编码需要去掉后缀
 			names[i] = strings.TrimSuffix(names[i], "."+isXOR)
 		}
-		if isEncode != "" {
+		if isEncode != "" && isXOR != "" { //不允许出现只编码没有加密的情况
 			decoder := c.newNameEncoding(isEncode)
 			tempName, err := decoder.DecodeString(strings.TrimSuffix(names[i], isEncode+isXOR))
 			if err != nil {
